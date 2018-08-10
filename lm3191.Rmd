@@ -1,0 +1,247 @@
+---
+title: "Data Visualization on Twitter"
+author: "Lishiwei Ma_lm3191, He You_hy2482"
+date: "11/04/2017"
+output: html_notebook
+runtime: shiny
+---
+
+###Brief Introduction to the Packages We Used.
+We mainly focus on 3 packages in this app: twitteR, wordcloud2 and shiny.twitteR is an R package which provides access to the Twitter API. We can easily manage Twitter users, view Twitter timelines or manipulate Twitter status through some inner functions.
+
+The app is divided into 3 parts. 
+
+1. Keywords Cloud.: Users can enter any word of interest and choose their prefered number of tweets, size and color, a wordcloud of tweets containing this keyword can be shown.
+
+2. User's Active Hours: If you are interested in the active time of any tweeter user, you can enter the id and find out the timeline of his recent 1000 tweets.
+
+3. Fan's Quality: You can also get an overview of the followings counts, followers counts and tweets counts of any user's followers in the third tab. Furthermore, we can evaluate the quality of anyone's followers. For example, a fan with more followers and counts of tweets tends to have more influence.
+
+
+###Building the Shiny App
+
+**1. Load the packages we need to use.**
+
+```{r, message=FALSE, warning=FALSE}
+packages.used=c("shiny", "twitteR", "RCurl", "tm", "wordcloud2", "DT", "tools", "httr", "lubridate", "plyr", "ggplot2")
+packages.needed=setdiff(packages.used, intersect(installed.packages()[,1],packages.used))
+if(length(packages.needed)>0){
+  install.packages(packages.needed, dependencies = TRUE)
+}
+library(shiny)
+require(twitteR)
+require(RCurl)
+require(tm)
+require(wordcloud2)
+library(DT)
+library(tools)
+library(httr)
+library(lubridate)
+library(plyr)
+library(ggplot2)
+```
+
+
+**2. Set twitter API** 
+
+For obtaining data from twitter. Here we provide our API but you can create your own on https://apps.twitter.com/.
+```{r}
+consumer_key<-"pLEhNMiOkSqBPVExs8VueJurN"
+consumer_secret<-"SdUgO0mR6t6OFmAlXcMqDv0t799H7JX0T4mBrBVcRoHiyOLiPp"
+access_secret<-"0jhU4q7DihWVd4C9ZF8WgNC4hVTBbTKVghLjAl5Cx6IUZ"
+access_token<-"926936466260942848-jePLBv9LT6achTMXZak79dLv8SwEB6p"
+setup_twitter_oauth(consumer_key,consumer_secret,access_token,access_secret)
+```
+
+
+**3. Self-Define Functions**
+
+In this module we mainly use functions from twitteR packages.
+```{r, message=FALSE, warning=FALSE}
+
+#SearchTwitter(): Input the keywords and the number of tweets to be searched, the SearchTwitter function returns k tweets containing the keywords.You can also change the language by altering the lang input.
+
+key_word<-function(keywords,k=500,minfreq=0.5){
+  DT_tweets<-searchTwitter(keywords,n=k,lang = "en",resultType ="recent")
+  DT_text<-sapply(DT_tweets,function(x) x$getText())
+  DT_corpus<-Corpus(VectorSource(DT_text))
+  DT_clean<-tm_map(DT_corpus,removePunctuation)
+  DT_clean<-tm_map(DT_clean,removeWords,stopwords("english"))
+  DT_clean<-tm_map(DT_clean,removeNumbers)
+  DT_clean<-tm_map(DT_clean,stripWhitespace)
+  x<-strsplit(keywords,split=" ")[[1]]
+  DT_clean<-tm_map(DT_clean,removeWords,c(toTitleCase(x),tolower(x)))
+  tdm<-TermDocumentMatrix(DT_clean)
+  m<-as.matrix(tdm)
+  v<-sort(rowSums(m),decreasing = TRUE)
+  Data<-data.frame(word=names(v),freq =v)
+  Data$perc<-Data$freq/sum(Data$freq)*100
+  return(Data[Data$perc>minfreq,])
+}
+
+#userTimeline(): Input the user's screen name and the number of tweets you want to search. The userTimeline function returns k recent tweets of the user. Here we set k=1000 to find the user hourly activity.It will return the information of 1000 recent tweets of the user.
+
+User_freq<-function(name){
+  DT<-userTimeline(name, n=1000)
+  extracttime <- function(x) {
+    return(x$getCreated())
+  }
+  DT.time <- lapply(DT,extracttime)
+  timefunc <- function(x) {
+    return(with_tz(x,tzone='UTC'))
+  }
+  DTtime <- ldply(DT.time, .fun=timefunc)
+  DTtime$hour <- factor(hour(DTtime$V1))
+  DTtime$week <- factor(wday(DTtime$V1))
+  DTtimedf <- as.data.frame(table(DTtime$hour))
+  return(DTtimedf)
+}
+
+#getUser(): Input the user's screen name you can get the profile of the user such as followers counts, following counts, favorite counts and so on.
+#getFollowers(): get the information of k followers of the user.
+
+datasetInput <- function(username,k){
+  a<-getUser(username)$getFollowers(n=k)
+  return(twListToDF(a))
+}
+
+```
+
+**4. UI Design.**
+```{r, message=FALSE, warning=FALSE}
+ui <- fluidPage(
+   
+   # Application title
+   titlePanel("Twitter Data Visualization"),
+   
+   tabsetPanel(
+     #Input function1
+     tabPanel("Keywords Cloud",fluid=TRUE,
+        sidebarLayout(
+          sidebarPanel(
+            textInput("Keywords", "Key words:", "justin bieber"),
+            sliderInput("Number","Number of tweets searched:",min = 100,max = 1000,value =100,step=10),
+            sliderInput("Size", "Size:",min = 0.1,max= 2,value =0.3,step=0.1),
+            sliderInput("minf", "Minimum Frequency:",min = 0.1,max = 1,value =0.2,step=0.01),
+            textInput("Color", "Color:","random-dark"),
+            selectInput("Shape", "Shape:",choices =c("star","caridiod","diamond","pentagon","circle")),
+            submitButton("search")
+            ),
+          mainPanel(
+            wordcloud2Output("wordcloud",width="100%",height="400px")
+          )
+        )
+      ),
+     
+     #Input function2
+      tabPanel("User's Active Hours",fluid=TRUE,
+          sidebarLayout(
+                sidebarPanel(
+                  textInput("User", "Twitter Screen Name:", "justinbieber"),
+                  submitButton("search")
+                ),
+                mainPanel(
+                  plotOutput("userfreq")
+                )
+              )
+     ),
+     
+     #Input function3
+     tabPanel("Fan's Quality",fluid=TRUE,
+          sidebarLayout(
+              sidebarPanel(
+                textInput("twitterid", "Twitter ID:", "justinbieber"),
+                sliderInput(inputId = "numbers", label = "Number of followers:",
+                  min = 100, max = 10000, value = 2000),
+                sliderInput(inputId = "alpha", label = "Alpha:",
+                  min = 0.1, max = 1, value = 0.5),
+                textInput("color", "Color:", "blue"),
+                submitButton("Search")
+            ),
+              mainPanel(
+                  plotOutput("ggPlot")
+                )
+          )
+     )
+   )
+)
+```
+
+**5. Server Design.**
+```{r, message=FALSE, warning=FALSE}
+server <- function(input, output) {
+  
+  #output function1
+  output$wordcloud <- renderWordcloud2({
+      keywords <-input$Keywords
+      n<-input$Number
+      Size<-input$Size
+      Color<-input$Color
+      Shape<-input$Shape
+      min<-input$minf
+      Data<-key_word(keywords,n,min)
+      wordcloud2(data=Data,shape=Shape,size=Size,color=Color)
+    })
+  
+  #output function2
+  output$userfreq<-renderPlot({
+    username<-input$User
+    Data1<-User_freq(username)
+    p <- ggplot(Data1,aes(x=Var1,y=Freq))
+    p+geom_bar(stat='identity',aes(fill=Freq))+
+      theme(legend.position='none')+
+      labs(x='Hour',y='Freq')
+  })
+  
+  #Output
+  output$ggPlot <- renderPlot({
+    Data2<-datasetInput(input$twitterid,input$numbers)
+    ggplot(data=Data2,aes(x=friendsCount,y=followersCount))+ 
+      geom_point(aes(size=statusesCount),color=input$color,alpha=input$alpha)+
+      scale_x_log10(breaks=c(10,100,1000,5000))+
+      scale_y_log10(breaks=c(10,100,1000,1000,20000))+
+      scale_size('Statuses Count',range=c(1,12))+
+      labs(x='Following Count',y='Follower Count')+
+      theme_bw()+
+      theme(legend.position=c(0.9,0.2))
+  })  
+}
+```
+
+**6. Run the App.**
+```{r, message=FALSE, warning=FALSE}
+# Run the application 
+shinyApp(ui = ui, server = server)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
